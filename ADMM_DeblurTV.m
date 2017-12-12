@@ -1,6 +1,6 @@
 function out = ADMM_DeblurTV(f,Img,K,opts)
 % Created on 12/12/2017 by Tarmizi Adam
-% ADMM for inpainting
+% ADMM for deblurring
 %
 %The following code solves the following optimization problem
 %
