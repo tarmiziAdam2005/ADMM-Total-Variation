@@ -1,10 +1,11 @@
 function out = ADMM_SnP(f,Img,K,opts)
-% Created on 5/12/2017 by Tarmizi Adam
+% Created on 16/2/2018 by Tarmizi Adam
+% Version 1.1
 % ADMM for removing blur with salt and pepper noise
 %
 %The following code solves the following optimization problem
 %
-%         minimize_u lam/2||Ku - f ||_1 + ||Du||_1 + I(u)
+%         minimize_u lam*||Ku - f ||_1 + ||Du||_1 + I(u)
 %
 % where I(u) is the indicator function.
 %%
@@ -19,32 +20,36 @@ function out = ADMM_SnP(f,Img,K,opts)
 %           out.relError : relative error 
 %%
 
-lam = opts.lam; 
-rho = opts.rho; 
+lam = opts.lam;  
 tol = opts.tol; 
 Nit = opts.Nit;
-rho_r = opts.rho_r;
 
-theta= 0.09;
+%******** Regularization parameter related to constraints ******
+rho_v = 0.01;
+rho_z = 0.1;
+rho_r = 5;
+
 
 relError        = zeros(Nit,1);
+psnrGain        = relError;     % PSNR improvement every iteration
+ssimGain        = relError;
 
 [row, col]  = size(f);
 u           = f;
 
 %*** Variables for v subproblems ***
 v1          = zeros(row,col);
-v2          = v1;
+%v2          = v1;
 
 %*** Variables for z and r subproblem ***
 z           = v1;
-r           = v1;
+%r           = v1;
 
 %**** Lagrange multipliers ***
-mu1         = zeros(row,col);
-mu2         = mu1;
-mu3         = mu1;
-mu4         = mu1;
+mu_v1         = zeros(row,col);
+mu_v2         = mu_v1;
+mu_z         = mu_v1;
+mu_r         = mu_v1;
 
 eigK        = psf2otf(K,[row col]); %In the fourier domain
 eigKtK      = abs(eigK).^2;
@@ -53,54 +58,65 @@ eigDtD      = abs(fft2([1 -1], row, col)).^2 + abs(fft2([1 -1]', row, col)).^2;
 [D,Dt]      = defDDt(); %Declare forward finite difference operators
 [Dux, Duy] = D(u);
 
-Ktf = imfilter(f,K,'circular');
-q   = imfilter (u,K,'circular') -f;
+lhs     = eigKtK + rho_v/rho_r*eigDtD + rho_z/rho_r; % From normal eqns.
+q       = imfilter (u,K,'circular') -f;
+
+tg = tic;
     for k = 1:Nit
         
-        
-      %*** solve v - subproblem ***  
-      x1          =  Dux + (1/rho)*mu1;
-      x2          =  Duy + (1/rho)*mu2;
-      
-      v1 = shrink(x1,lam/rho);
-      v2 = shrink(x2,lam/rho);
-      
-       %*** solve r -  subproblem ***
-      r = shrink(q + mu4/rho_r, lam/rho_r);
-        
-       %*** solve u - subproblem ***  
       u_old   = u;
-      rhs     = rho*Ktf + imfilter(rho_r*r-mu4,K,'circular') + Dt(rho*v1 - mu1,rho*v2 - mu2) + rho*z - mu3; 
-      lhs     = rho*eigKtK + rho*eigDtD + rho;
       
+      %*** solve v - subproblem ***  
+      x1          =  Dux + mu_v1/rho_v;
+      x2          =  Duy + mu_v2/rho_v;
+      
+      v1 = shrink(x1,1/rho_v);
+      v2 = shrink(x2,1/rho_v);
+       
+      %*** solve r - subproblem ***
+      r = shrink(q + mu_r/rho_r, lam/rho_r);
+        
+      %*** solve u - subproblem ***  
+      ftemp   = r + f -mu_r/rho_r;
+      rhs     = imfilter(ftemp,K,'circular') + 1/rho_r*Dt(rho_v*v1 - mu_v1,rho_v*v2 - mu_v2) + rho_z/rho_r*z - mu_z/rho_r; 
       u       = fft2(rhs)./lhs;
       u       = real(ifft2(u));
       
-      
-       %*** solve z - subproblem ***
-      z = min(255,max(u + mu3/rho,0));
+      %*** solve z - subproblem ***
+      z = min(255,max(u + mu_z/rho_z,0));
       
       [Dux, Duy]  = D(u);
      
-      q   = imfilter (u,K,'circular') - f;
+      q   = imfilter(u,K,'circular') - f;
       
-      mu1 = mu1 -rho*(v1- Dux);
-      mu2 = mu2 -rho*(v2 - Duy);
-      mu3 = mu3 - rho*(z - u);
-      %mu4 = mu4 + (r - imfilter(u,K,'circular')+ f);
-      mu4 = mu4 - rho_r*(r - q);
+      %*** Update the Lagrange multipliers ***
+      mu_v1 = mu_v1 -rho_v*(v1- Dux);
+      mu_v2 = mu_v2 -rho_v*(v2 - Duy);
       
+      mu_z = mu_z - rho_z*(z - u);
+      mu_r = mu_r - rho_r*(r - q);
+      
+      %*** Some statistics, this might slow the cpu time of the algo. ***
       relError(k)    = norm(u - u_old,'fro')/norm(u, 'fro');
+      %psnrGain(k)    = psnr_fun(u,double(Img));
+      %ssimGain(k)    = ssim_index(u,double(Img));
       
       if relError(k) < tol
           break;
       end
-      
-        
+           
     end
     
+    tg = toc(tg);  
+
     out.sol                 = u;
     out.relativeError       = relError(1:k);
+    out.psnrGain            = psnrGain(1:k);
+    out.ssimGain            = ssimGain(1:k);
+    out.cpuTime             = tg;
+    out.psnrRes             = psnr_fun(u, double(Img));
+    out.ssimRes             = ssim_index(u, double(Img));
+    out.OverallItration     = size(out.relativeError,1);
 
 end
 
@@ -125,3 +141,4 @@ end
 function z = shrink(x,r)
 z = sign(x).*max(abs(x)-r,0);
 end
+
